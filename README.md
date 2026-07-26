@@ -3,25 +3,57 @@
 > **MIRU 2026 · Track B (Poster)** — The 29th Meeting on Image Recognition and Understanding, Nagasaki, Japan, Aug 3–6, 2026
 > YoungWook Park · Siah Kim · Zepa Yang — Dept. of Computer Science & Engineering, Soonchunhyang University · Efficient Computing Lab
 
-A fully on-premises pipeline that puts a **GRPO fine-tuned Qwen2.5-3B** on a **Jetson Orin Nano (8 GB)** to read four heterogeneous sensor streams in natural language and output a three-class safety state — `steady / monitoring / emergency` — in **2.3 s median end-to-end**, with no cloud dependency.
+A fully on-premises pipeline: a **GRPO fine-tuned Qwen2.5-3B** running on a **Jetson Orin NX (16 GB)** reads four heterogeneous sensor streams in natural language and outputs a structured safety judgment — `{mode, action, level, reason}` — which a deterministic rule layer (`post_process_v4`) then verifies. No cloud dependency; every inference is logged to SQLite on-device.
+
+All numbers below come from the lab's version-history record (`MODEL_HISTORY.md`) and the on-device production database, re-verified directly on the running system on 2026-07-26.
 
 <p align="center">
   <img src="assets/poster_preview.png" width="640" alt="MIRU 2026 poster preview">
 </p>
 
-## Highlights
+## Measured results
 
-| Metric | Value | Eval cohort |
+| Metric | Value | Source / cohort |
 |---|---|---|
-| LLM-only accuracy (deployed V13) | **63%** (21/33) | held-out benchmark, disjoint from training |
-| System-level accuracy (LLM + rule backstop) | **100%** | same benchmark, after backstop (~8% overrides) |
+| LLM-only accuracy (deployed V13) | **63%** (21/33) | fixed 33-case benchmark (`compare_v8.py`), disjoint from training |
+| System-level accuracy (LLM + rule backstop) | **100%** | same benchmark, after `post_process_v4` |
 | Quantization cost (fp16 → q4f16_1) | **−6 pp** (39% → 33%) | controlled pair: same V14 checkpoint, same benchmark |
-| Compression | **3.8×** (6.2 GB → 1.617 GB) | fits Jetson Orin Nano 8 GB unified memory |
-| End-to-end latency | **2.3 s median** (5 s SLA) | 100-trial live run |
+| Model footprint | **1.617 GB** (q4f16_1, MLC) | vs ~6.2 GB fp16 — 3.8× compression |
+| Live deployment | **23,824 inferences / 19 days** | production DB (`analysis_log`), 2026-05-23 → 06-11 |
+| End-to-end latency (live) | **median 4.4 s** · avg 4.9 s · p95 7.5 s | measured per-inference in the production DB |
 
-## Why an LLM, not another threshold controller?
+## The training journey (this is the interesting part)
 
-Single-value thresholds or pattern-based control curves can only switch a cleansing process on/off — they cannot reason about what that intervention does to the *other* modalities. Here the LLM judges all four sensor streams **jointly**, so the effect of an evacuation/cleansing action (e.g., ventilation lowering VOC while shifting temperature and humidity) can enter the safety judgment itself. This deployment is a pilot of **system homeostasis maintenance**, not a threshold replacement.
+<p align="center">
+  <img src="assets/version_history.png" width="820" alt="Version history on the fixed 33-case benchmark">
+</p>
+
+Seven model versions, three training paradigms, one clear lesson:
+
+| Ver. | Method | Data | LLM-only | System | Note |
+|---|---|---|---|---|---|
+| V8 | DPO (on V7 SFT) | – | 21% (7/33) | 100% | best pre-GRPO |
+| V9 | SFT from scratch | 5,000 | 9% | 100% | regression |
+| V10 | CoT SFT (LR 5e-7) | 5,000 | 9% | 100% | CoT didn't help |
+| V11 | Direct-JSON SFT (LR 2e-6) | 5,000 | 12% | 96% | SFT ceiling confirmed |
+| V12 | GRPO, 500 samples (from V8 LoRA) | 500 | 18% | 100% | signal confirmed |
+| **V13** | **GRPO, 5,000 balanced (from V12 LoRA)** | 5,000 | **63% (21/33)** | **100%** | **deployed** |
+| V14 | GRPO + asymmetric reward shaping (from base) | 6,000 | 39% fp16 / 33% q4 | 100% | mode collapse — discarded |
+
+- **Why SFT failed (V9–V11)**: token-level cross-entropy weights every token equally — strong at learning explanation prose, weak at the single `action` token that actually matters. Few-shot examples in the system prompt didn't help either (V11).
+- **Why GRPO worked**: the reward hits the action decision directly (+1.0 correct, −1.0 wrong, −2.0 malformed JSON). V13 training: LR 2e-5, 1 epoch, num_generations=4, max_completion_length=80, cosine scheduler — **6 h 52 m on a single NVIDIA L40** (~5 s/step), a 3× jump over the previous best.
+- **V14 mode collapse**: to fix V13's caution-overprediction (5 of its 12 failures), the wrong-`caution` penalty was raised to −1.5 while others stayed at −1.0. The policy escaped to the lowest-penalty answer instead: **21 of 22 failures answered `none`** — including obvious emergencies (current 1.8 A, VOC 1200). GRPO's group-relative baseline accelerates this drift. **Keep reward magnitudes symmetric; fix class imbalance in the data, not the reward.**
+- V14 was salvaged as a **controlled quantization benchmark**: same checkpoint, same 33 cases — fp16 39% vs q4f16_1 33% = a measured −6 pp quantization tax.
+
+## What the model actually decides
+
+Output is a JSON judgment over five sensor values (temperature, humidity, VOC, current, vibration RMS):
+
+- **steady** → `none` · `open_window` (26–28 °C) · `close_window` (<15 °C) · `air_purifier_on` (VOC 400–700) · `dehumidifier_on` (humidity >75%)
+- **monitoring** → `caution` (28–30 °C, current 1.3–1.7 A, vibration 0.05–0.08 g, VOC 700–1,000)
+- **emergency** → `overheat` (>30 °C) · `electrical` (>1.7 A) · `vibration` (>0.08 g) · `air_quality` (VOC >1,000)
+
+The 33-case benchmark covers every action class plus exact boundary values (26.0 °C, 30.0 °C, 1.3 A, 0.05 g, …).
 
 ## System architecture
 
@@ -29,33 +61,26 @@ Single-value thresholds or pattern-based control curves can only switch a cleans
   <img src="assets/system_architecture.png" width="820" alt="4-stage pipeline">
 </p>
 
-1. **Sensor acquisition** — Raspberry Pi 5 polls DHT22 (temp/humidity), MPU-6050 (vibration RMS), MQ-135 (VOC), ACS712-30A (current) and posts one 5-field JSON payload per cycle.
-2. **Inference gateway** — FastAPI on Jetson bridges sensor JSON into the model's prompt distribution.
-3. **LLM inference** — Qwen2.5-3B-Instruct, GRPO fine-tuned, compiled to q4f16_1 (1.617 GB) via MLC-LLM/Apache TVM, 1.2–1.8 s per call on the Jetson GPU.
-4. **Rule-based safety backstop** — four hard thresholds (temp>80 °C, current>25 A, vibration>2.5 g, VOC>500 ppm) enforced over any LLM output; results persisted to SQLite for audit/retraining.
+1. **Sensor acquisition** — Raspberry Pi 5 polls DHT22 (temp/humidity), MPU-6050 (vibration RMS), MQ-135 (VOC), ACS712-30A (current); one 5-field JSON payload per cycle.
+2. **Inference gateway** — FastAPI on the Jetson turns sensor JSON into the model's prompt.
+3. **LLM inference** — Qwen2.5-3B-Instruct (GRPO V13), compiled to q4f16_1 via MLC-LLM / Apache TVM; served on-device (JetPack L4T R36.4.3). V12 weights kept alongside for rollback.
+4. **Rule backstop + logging** — `post_process_v4` applies deterministic threshold rules over the LLM output; every inference (raw LLM output, final output, corrections, latency) is persisted to SQLite `analysis_log`.
 
-## GRPO training curriculum (V8 → V14)
+## What 19 days of live deployment taught us
 
-<p align="center">
-  <img src="assets/grpo_curriculum.png" width="820" alt="Sequential improvement across the GRPO curriculum">
-</p>
+The production log is blunter than the benchmark: during a heat-skewed summer period (11,187 of 23,824 records ended `emergency`), the LLM's mode agreed with the final post-processed mode only **~36–51%** of the time, and the backstop corrected some field of the output in **83–97%** of records.
 
-- Synthetic training scenarios spanning 3 modes and 4 emergency subtypes, augmented per version (200 → 2,000 samples) — bars show **sequential curriculum improvement**, not a same-scope comparison.
-- Reward: +1.0 correct mode, −1.0 wrong mode, −2.0 malformed JSON (TRL v0.13, single NVIDIA L40).
-- **V14 mode collapse**: escalating one wrong-class penalty to −1.5 (asymmetric reward shaping) collapsed 21/22 failures into a single low-penalty class (33%). Lesson: **keep GRPO reward magnitudes symmetric across error types — fix class imbalance in the data, not the reward.**
-- V14 doubled as a **controlled quantization benchmark**: same checkpoint, same benchmark, fp16 39% → q4f16_1 33% = a measured −6 pp deployment tax for 3.8× compression.
-
-## Per-class behavior (deployed V13, q4f16_1)
-
-| Class | Precision | Recall | Notes |
-|---|---|---|---|
-| steady | 0.81 | 0.74 | most distinctive sensor profile |
-| monitoring | 0.41 | 0.53 | ambiguous boundary with steady |
-| emergency | 0.72 | 0.78 | hard thresholds aid detection |
+That gap between the balanced benchmark (63%) and the shifted live distribution is exactly why the architecture splits roles: the **LLM provides the judgment and human-readable reasoning; the deterministic layer owns the final safety decision.** At this model scale, the backstop is not a fallback — it is a required component, and the per-inference log is the audit trail that proves it.
 
 ## Stack
 
-`Raspberry Pi 5` · `Jetson Orin Nano 8 GB` · `Qwen2.5-3B-Instruct` · `GRPO (TRL)` · `MLC-LLM / Apache TVM (q4f16_1)` · `FastAPI` · `SQLite`
+`Raspberry Pi 5` · `Jetson Orin NX 16 GB (JetPack / L4T R36.4.3)` · `Qwen2.5-3B-Instruct` · `GRPO (TRL)` · `LoRA` · `MLC-LLM / Apache TVM (q4f16_1)` · `FastAPI` · `SQLite` · trained on `NVIDIA L40`
+
+## Engineering notes (hard-won)
+
+- MLC weight conversion: sharded HF checkpoints must be passed as a directory — concatenating shards corrupts the model.
+- MLC on Jetson Docker needs `--runtime nvidia` (not `--gpus all`), and `gen_config` requires an explicit `--conv-template qwen2`.
+- Prompt language (Korean vs English) had no measurable latency effect on this pipeline — the levers that matter are model size, quantization, and output length.
 
 ## Publication
 
@@ -64,4 +89,4 @@ The extended abstract is not redistributed here in accordance with MIRU's confid
 
 ## Limitations & next steps
 
-37% LLM-only error rate (backstop-dependent for safety-critical use), synthetic-only training data, stateless inference. Next: sliding-window sensor history in-prompt, larger 7B quantized bases, and closing the homeostasis loop with actuation feedback.
+A 3B q4 model tops out near ~63% on this rule-set (quantization −6 pp, capacity ceiling, boundary-value confusion, cross-sensor dimension mix-ups); synthetic-only training data; stateless inference. Next: sliding-window sensor history in-prompt, positive-reward-weighted GRPO instead of penalties, constrained decoding for the action token, and larger quantized bases.
