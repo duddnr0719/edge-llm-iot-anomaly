@@ -19,8 +19,10 @@ All numbers below come from the lab's version-history record (`MODEL_HISTORY.md`
 | System-level accuracy (LLM + rule backstop) | **100%** | same benchmark, after `post_process_v4` |
 | Quantization cost (fp16 → q4f16_1) | **−6 pp** (39% → 33%) | controlled pair: same V14 checkpoint, same benchmark |
 | Model footprint | **1.617 GB** (q4f16_1, MLC) | vs ~6.2 GB fp16 — 3.8× compression |
-| Live deployment | **23,824 inferences / 19 days** | production DB (`analysis_log`), 2026-05-23 → 06-11 |
-| End-to-end latency (live) | **median 4.4 s** · avg 4.9 s · p95 7.5 s | measured per-inference in the production DB |
+| Live deployment | **23,824 inferences / 18.7 days** (~1,272/day) | production DB (`analysis_log`), 2026-05-23 → 06-11 |
+| End-to-end latency (live) | **p50 4.43 s** · p90 6.14 s · p95 7.46 s · p99 10.21 s | measured per-inference in the production DB |
+
+Deep-dives, all from primary records: **[Training history V7→V14](docs/TRAINING_HISTORY.md)** · **[The 33-case benchmark](docs/BENCHMARK.md)** · **[19-day production log analysis](docs/DEPLOYMENT_LOG.md)** · [한국어 정리](docs/PORTFOLIO_KO.md)
 
 ## The training journey (this is the interesting part)
 
@@ -68,9 +70,11 @@ The 33-case benchmark covers every action class plus exact boundary values (26.0
 
 ## What 19 days of live deployment taught us
 
-The production log is blunter than the benchmark: during a heat-skewed summer period (11,187 of 23,824 records ended `emergency`), the LLM's mode agreed with the final post-processed mode only **~36–51%** of the time, and the backstop corrected some field of the output in **83–97%** of records.
+The production log is blunter than the benchmark. A persistent >1.7 A condition made `electrical` the dominant true verdict (10,840 of 23,824 rows), and under that skew the LLM's mode agreed with the final post-processed mode only **36–51%** of the time (action agreement 25.5%); the backstop corrected some field in **83–97%** of records — mostly `mode` (58%) and `action` (42%).
 
-That gap between the balanced benchmark (63%) and the shifted live distribution is exactly why the architecture splits roles: the **LLM provides the judgment and human-readable reasoning; the deterministic layer owns the final safety decision.** At this model scale, the backstop is not a fallback — it is a required component, and the per-inference log is the audit trail that proves it.
+The single most frequent live mistake — `overheat` answered for an electrical condition (4,256 rows) — is **the same cross-sensor confusion the benchmark failure analysis had already flagged on one case (current 2.5 A → overheat), reproduced at scale in the wild.**
+
+That gap between the balanced benchmark (63%) and the shifted live distribution is exactly why the architecture splits roles: the **LLM provides the judgment and human-readable reasoning; the deterministic layer owns the final safety decision.** At this model scale, the backstop is not a fallback — it is a required component, and the per-row audit trail (raw output → corrections → final) is what makes every number on this page checkable. Full breakdown: [docs/DEPLOYMENT_LOG.md](docs/DEPLOYMENT_LOG.md).
 
 ## Stack
 
