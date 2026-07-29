@@ -1,0 +1,6 @@
+# Jetson Orin NX 온디바이스 서빙 (JetPack L4T R36.4.3)
+# mlc-llm / mlc-ai 런타임은 pip가 아니라 jetson-containers 이미지로 설치한다 (0.20.0 확인).
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+requests

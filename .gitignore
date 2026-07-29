@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 학습 산출물 (레포에 올리지 않는다 — 용량 및 재현은 스크립트로)
+*.jsonl
+*.safetensors
+*.bin
+*.pt
+qwen_v*_lora/
+sensor-merged-hf-v*/
+dist/
+
+# 로그 / 로컬 DB
+*.log
+*.db
+*.sqlite3
+
+# OS
+.DS_Store

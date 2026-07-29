@@ -1,0 +1,11 @@
+# 학습·병합·평가 (L40 / A6000 급 GPU 서버)
+# 아래 조합에서 V12/V13/V14 GRPO 실행을 확인했다. TRL의 GRPO API는
+# 이 버전대에서 자주 바뀌었으므로 상향 시 GRPOConfig/GRPOTrainer 인자를 먼저 확인할 것.
+torch>=2.4
+transformers==4.51.3
+trl==1.4.0
+peft==0.19.1
+accelerate==1.13.0
+datasets>=3.0
+bitsandbytes>=0.43
+requests

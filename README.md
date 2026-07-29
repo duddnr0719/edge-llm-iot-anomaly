@@ -22,7 +22,7 @@ All numbers below come from the lab's version-history record (`MODEL_HISTORY.md`
 | Live deployment | **23,824 inferences / 18.7 days** (~1,272/day) | production DB (`analysis_log`), 2026-05-23 → 06-11 |
 | End-to-end latency (live) | **p50 4.43 s** · p90 6.14 s · p95 7.46 s · p99 10.21 s | measured per-inference in the production DB |
 
-Deep-dives, all from primary records: **[Training history V7→V14](docs/TRAINING_HISTORY.md)** · **[The 33-case benchmark](docs/BENCHMARK.md)** · **[19-day production log analysis](docs/DEPLOYMENT_LOG.md)** · [한국어 정리](docs/PORTFOLIO_KO.md)
+Deep-dives, all from primary records: **[Training history V7→V14](docs/TRAINING_HISTORY.md)** · **[The 33-case benchmark](docs/BENCHMARK.md)** · **[19-day production log analysis](docs/DEPLOYMENT_LOG.md)** · [한국어 정리](docs/PORTFOLIO_KO.md) · **[the code that produced them](src/README.md)**
 
 ## The training journey (this is the interesting part)
 
@@ -75,6 +75,23 @@ The production log is blunter than the benchmark. A persistent >1.7 A condition 
 The single most frequent live mistake — `overheat` answered for an electrical condition (4,256 rows) — is **the same cross-sensor confusion the benchmark failure analysis had already flagged on one case (current 2.5 A → overheat), reproduced at scale in the wild.**
 
 That gap between the balanced benchmark (63%) and the shifted live distribution is exactly why the architecture splits roles: the **LLM provides the judgment and human-readable reasoning; the deterministic layer owns the final safety decision.** At this model scale, the backstop is not a fallback — it is a required component, and the per-row audit trail (raw output → corrections → final) is what makes every number on this page checkable. Full breakdown: [docs/DEPLOYMENT_LOG.md](docs/DEPLOYMENT_LOG.md).
+
+## Repository layout
+
+The as-run scripts for every version in the table above are in [`src/`](src/README.md) — 32 files, one per stage of the pipeline:
+
+```
+src/
+├── data/     synthetic dataset generation (V8 pairs · 5,000-sample balanced set · V14 augmentation)
+├── train/    V8 SFT+DPO → V9/V10/V11 SFT → V12/V13 GRPO → V14 reward-shaping failure
+├── merge/    LoRA → HF checkpoint, incl. the rope_theta patch MLC needs
+├── convert/  mlc_llm convert_weight / gen_config per version + the Jetson deploy pipeline
+├── serve/    mlc_server_v4.py — FastAPI + post_process_v4 backstop + SQLite audit log
+├── eval/     compare_v8.py (the 33-case benchmark) + fp16-vs-q4 test + production-log analysis
+└── sensor/   Raspberry Pi 5 collector (DHT22 · MPU-6050 · MQ-135 · ACS712-30A)
+```
+
+These are the files as they ran on the lab machines, so the hyperparameters in `finetune_v13_grpo.py` are literally the ones behind the 63% figure. Internal tailnet addresses were replaced with `JETSON_HOST` / `L40_HOST` placeholders before publishing; nothing else was rewritten. Install sets: `requirements-train.txt` (GPU server), `requirements-jetson.txt` (device), `requirements-sensor.txt` (Pi). Step-by-step run order is in [`src/README.md`](src/README.md).
 
 ## Stack
 
